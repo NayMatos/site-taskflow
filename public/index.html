@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TaskFlow - Gestor de Tarefas Colaborativo</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Polyfill para fazer o Drag and Drop funcionar em telas Touch (Celulares) -->
+    <script src="https://cdn.jsdelivr.net/gh/bernardo-castilho/DragDropTouch/DragDropTouch.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
@@ -12,7 +14,12 @@
         .dark ::-webkit-scrollbar-track { background: #1e293b; }
         .dark ::-webkit-scrollbar-thumb { background: #475569; }
         .dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
-        .task-card { transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out; }
+        .task-card { 
+            transition: all 0.2s ease; 
+            touch-action: none; 
+            -webkit-user-select: none; /* Evita selecionar o texto sem querer ao segurar */
+            user-select: none;
+        }
         .task-card:hover { transform: translateY(-4px); }
         .modal-backdrop { transition: opacity 0.3s ease-in-out; }
         .dark .column-drag-over { background-color: #334155 !important; }
@@ -100,7 +107,7 @@
     <!-- Notificações -->
     <div id="toast" class="fixed bottom-5 right-5 bg-green-500 text-white py-2 px-5 rounded-lg shadow-lg opacity-0 transition-opacity duration-300 z-50 pointer-events-none"></div>
 
-    <script type="module">
+<script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getFirestore, collection, onSnapshot, addDoc, doc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -161,19 +168,15 @@
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
-                console.log("Usuário autenticado:", user.uid);
                 onSnapshot(tasksRef, (snap) => {
                     const tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     renderTasks(tasks);
-                }, (error) => {
-                    console.error("Erro de permissão no Firestore:", error);
                 });
             }
         });
 
         taskForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            
             const id = document.getElementById('task-id').value;
             const data = {
                 title: document.getElementById('title').value.trim(),
@@ -194,8 +197,7 @@
                 }
                 closeModal();
             } catch (err) {
-                console.error("Erro ao salvar no Firebase:", err);
-                showToast('Erro ao salvar. Verifique o console.', true);
+                showToast('Erro ao salvar no Firebase.', true);
             }
         });
 
@@ -223,18 +225,21 @@
 
                 el.querySelector('.edit-btn').onclick = () => openModal(task);
                 
-                // Exclusão Direta
                 el.querySelector('.del-btn').onclick = async () => {
                     try {
                         await deleteDoc(doc(db, 'tasks', task.id));
                         showToast('Tarefa removida.');
                     } catch (e) {
-                        console.error("Erro ao deletar:", e);
                         showToast('Erro ao remover.', true);
                     }
                 };
 
-                el.ondragstart = (e) => e.dataTransfer.setData('id', task.id);
+                // FIX MOBILE: Salvando o ID na janela como redundância
+                el.addEventListener('dragstart', (e) => {
+                    e.dataTransfer.setData('id', task.id);
+                    window.draggedTaskId = task.id; 
+                });
+
                 document.getElementById(cols[task.status]).appendChild(el);
             });
         };
@@ -244,19 +249,36 @@
         document.getElementById('cancel-btn').onclick = closeModal;
         document.getElementById('modal-backdrop').onclick = closeModal;
 
+        // FIX MOBILE: Melhorando a detecção de drop nas colunas
         document.querySelectorAll('.task-list').forEach(list => {
             const col = list.parentElement;
-            col.ondragover = (e) => {
-                e.preventDefault();
-                col.classList.add('dark:bg-slate-700/50');
-            };
-            col.ondragleave = () => col.classList.remove('dark:bg-slate-700/50');
-            col.ondrop = async (e) => {
-                col.classList.remove('dark:bg-slate-700/50');
-                const id = e.dataTransfer.getData('id');
+            
+            col.addEventListener('dragover', (e) => {
+                e.preventDefault(); // Obrigatório para permitir soltar
+                col.classList.add('column-drag-over');
+            });
+            
+            col.addEventListener('dragleave', () => {
+                col.classList.remove('column-drag-over');
+            });
+            
+            col.addEventListener('drop', async (e) => {
+                e.preventDefault(); // Previne comportamentos estranhos no celular
+                col.classList.remove('column-drag-over');
+                
+                // Resgata o ID (Se o celular apagar o dataTransfer, pega da janela)
+                const id = e.dataTransfer.getData('id') || window.draggedTaskId;
                 const status = col.id.replace('-column', '');
-                await updateDoc(doc(db, 'tasks', id), { status });
-            };
+                
+                if (id) {
+                    try {
+                        await updateDoc(doc(db, 'tasks', id), { status });
+                        window.draggedTaskId = null; // Limpa após o uso
+                    } catch(err) {
+                        showToast("Erro ao mover a tarefa.", true);
+                    }
+                }
+            });
         });
 
         document.getElementById('current-year').textContent = new Date().getFullYear();
